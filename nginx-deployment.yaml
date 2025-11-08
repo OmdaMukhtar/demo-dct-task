@@ -15,7 +15,7 @@ spec:
         app: nginx
     spec:
       containers:
-      - image: 080084219385.dkr.ecr.us-east-1.amazonaws.com/demo:latest
+      - image: account_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
         imagePullPolicy: Always
         name: nginx
         resources:
@@ -27,11 +27,8 @@ spec:
             cpu: "500m"
         ports:
         - containerPort: 80
-        volumeMounts:
-        - name: html
-          mountPath: /usr/share/nginx/html
-      volumes:
-      - name: html
-        configMap:
-          name: nginx-html
-          defaultMode: 0644
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName

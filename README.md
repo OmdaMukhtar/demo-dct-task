@@ -1,5 +1,7 @@
 
 # K8: Kubernetes and Monitoring
+![architect](assets/candidate-dct.drawio.png)
+
 Task Description:
 1. EKS Cluster Setup:
    - Set up an Amazon EKS (Elastic Kubernetes Service) cluster.
@@ -21,7 +23,7 @@ Task Description:
    - Document the steps to set up the EKS cluster, deploy the application, configure Ingress, and set up HPA.
    - Provide instructions for integrating Datadog and accessing monitoring dashboards.
 
-![architect](assets/candidate-dct.drawio.png)
+
 ---
 
 ## EKS Cluster Setup
@@ -29,6 +31,7 @@ Task Description:
     - Install AWS Cli
     - Install Kubectl
     - Install Eksctl
+    - Create Ec2 instance as eks-admin or you can use your computer
 
 - Install ``awscli`` for the credentials and interact with aws resources [reference](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
 ```bash
@@ -45,6 +48,9 @@ echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
 ```
 
 - Install ``eksctl`` to create the cluster [reference](https://docs.aws.amazon.com/eks/latest/eksctl/installation.html)
+  - create eks cluster called ``demo-dct`` version  ``v1.33`` with two worker nodes called ``linux-nodes`` in  region ``us-east-1``
+  and type of EC2 worker nodes is ``t3.medium``.
+
 ```bash
 eksctl create cluster \
  --name demo-dct \
@@ -61,132 +67,140 @@ aws eks --region us-east-1 update-kubeconfig --name demo-dct
 ```
 
 ## Deploy a Sample Application
+It's simple application that display the pod name with name of the worker name that pod resident there,
+and it's changed dynamically base on the selection of the LoadBalancer (ALB).
+
 - Requirements
-  - build the docker image and pushed to the ECR service, and this image has custom package like stress
-  to test the HPA of the pods, when stressed
+  - build the docker image Nginx and pushed to the ECR service, and this image has custom package stress
+  which will used to test the HPA of the pods.
+  - Shell script that grab the names of (pod & node).
+    ```bash
+    #!/bin/sh
+    POD_NAME=$(hostname)
+    POD_NAME=${POD_NAME:-"Unknown Pod"}
+    NODE_NAME=${NODE_NAME:-"Unknown Node"}
+
+    # Replace placeholders in HTML
+    sed -i "s/{{POD_NAME}}/${POD_NAME}/g" /usr/share/nginx/html/index.html
+    sed -i "s/{{NODE_NAME}}/${NODE_NAME}/g" /usr/share/nginx/html/index.html
+
+    # Start Nginx
+    nginx -g 'daemon off;'
+    ```
   - Create an ECR repository called ``demo``
-```bash
-# install docker, on the eks-admin machine
-sudo yum install -y docker
+    ```bash
+    # install docker, on the eks-admin machine
+    sudo yum install -y docker
 
-# add current user to the docker group to build  and mange image
-sudo usermod -aG docker $USER
+    # add current user to the docker group to build  and mange image
+    sudo usermod -aG docker $USER
 
-# create ECR repo
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin account_id.dkr.ecr.us-east-1.amazonaws.com
+    # create ECR repo
+    aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin account_id.dkr.ecr.us-east-1.amazonaws.com
 
-# build the image
-docker build -t nginx-stress:latest .
+    # build the image
+    docker build -t nginx-stress:latest .
 
-# tag it
-docker tag demo:latest account_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
+    # tag it
+    docker tag demo:latest account_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
 
-# test the image before you push (optional)
-docker run -d -p 8080:80 nginx-stress:latest
+    # test the image before you push (optional)
+    docker run -d -p 8080:80 nginx-stress:latest
 
-# list containers
-docker ps
+    # list containers
+    docker ps
 
-#set the container id
-docker exec -it container_id /bin/sh
+    #set the container id
+    docker exec -it container_id /bin/sh
 
-# execute this  line inside the container
-stress --cpu 8 --io 4 --vm  2 --vm-bytes  128M --timeout 10s
+    # execute this  line inside the container
+    stress --cpu 8 --io 4 --vm  2 --vm-bytes  128M --timeout 10s
 
-# push it to ECR service
-docker push account_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
-```
+    # push it to ECR service
+    docker push account_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
+    ```
   - create a deployment (nginx-deployment)
-```yml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  labels:
-    app: nginx
-  name: nginx
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: nginx
-  template:
+    ```yml
+    apiVersion: apps/v1
+    kind: Deployment
     metadata:
-      labels:
+    labels:
         app: nginx
+    name: nginx
     spec:
-      containers:
-      - image: acount_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
-        imagePullPolicy: Always
-        name: nginx
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "200m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        ports:
-        - containerPort: 80
-        volumeMounts:
-        - name: html
-          mountPath: /usr/share/nginx/html
-      volumes:
-      - name: html
-        configMap:
-          name: nginx-html
-          defaultMode: 0644
+    replicas: 3
+    selector:
+        matchLabels:
+        app: nginx
+    template:
+        metadata:
+        labels:
+            app: nginx
+        spec:
+        containers:
+        - image: acount_id.dkr.ecr.us-east-1.amazonaws.com/demo:latest
+            imagePullPolicy: Always
+            name: nginx
+            resources:
+            requests:
+                memory: "256Mi"
+                cpu: "200m"
+            limits:
+                memory: "512Mi"
+                cpu: "500m"
+            ports:
+            - containerPort: 80
+            env:
+            - name: NODE_NAME
+            valueFrom:
+                fieldRef:
+                fieldPath: spec.nodeName
+    ```
 
-```
+    - Create a service which has LoadBalancer type to let external access to reach our services
+    ```yml
+    apiVersion: v1
+    kind: Service
+    metadata:
+    name: nginx-lb
+    spec:
+    selector:
+        app: nginx
+    ports:
+        - protocol: TCP
+        port: 80
+        targetPort: 80
+    type: LoadBalancer
 
-- Create a service which has LoadBalancer type to let external access to reach our services
-```yml
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx-lb
-spec:
-  selector:
-    app: nginx
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 80
-  type: LoadBalancer
+    ```
 
-```
-
-- Create the static page application index.html as Configmap volume
-```bash
-kubectl create configmap nginx-html --from-file=index.html=/home/ec2-user/src/index.html
-```
-
-- Deploy the application
- ```bash
-kubectl apply -f nginx-deployment.yaml
-kubectl apply -f nginx-service.yaml
- ```
+    - Deploy the application
+    ```bash
+    kubectl apply -f nginx-deployment.yaml
+    kubectl apply -f nginx-service.yaml
+    ```
 
 ## Ingress Controller
 - Deploy ingress Controller
-```yml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: nginx-ingress
-  annotations:
-    kubernetes.io/ingress.class: "nginx"
-spec:
-  rules:
-    - http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: nginx
-                port:
-                  number: 80
-```
+    ```yml
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+    name: nginx-ingress
+    annotations:
+        kubernetes.io/ingress.class: "nginx"
+    spec:
+    rules:
+        - http:
+            paths:
+            - path: /
+                pathType: Prefix
+                backend:
+                service:
+                    name: nginx
+                    port:
+                    number: 80
+    ```
 
 ## Horizontal Pod Autoscaler (HPA):
 Implement HPA based on memory utilization for the deployed application
@@ -194,51 +208,51 @@ Implement HPA based on memory utilization for the deployed application
   - metrics server
   - deployment horizontal pod autoscaler
 
-- HPA works on resource metrics
-```bash
-# validation for the metrics server
-kubectl get deployment metrics-server -n kube-system
-kubectl top nodes
-kubectl top pods
+  - HPA works on resource metrics
+    ```bash
+    # validation for the metrics server
+    kubectl get deployment metrics-server -n kube-system
+    kubectl top nodes
+    kubectl top pods
 
-# create the yaml file
-kubectl autoscale deployment nginx \
-  --cpu-percent=30 \
-  --min=2 \
-  --max=7 \
-  --dry-run=client -oyaml > nginx-hpa.yaml
-```
-- Then replace  in the nginx-hpa deployment
-```yml
-- resource:
-    name: cpu
-    target:
-    averageUtilization: 30
-    type: Utilization
-```
-with
-```yml
-- resource:
-    name: memory
-    target:
-    averageUtilization: 30
-    type: Utilization
-```
+    # create the yaml file
+    kubectl autoscale deployment nginx \
+    --cpu-percent=30 \
+    --min=2 \
+    --max=7 \
+    --dry-run=client -o yaml > nginx-hpa.yaml
+    ```
+    - Then replace  in the nginx-hpa deployment
+    ```yml
+    - resource:
+        name: cpu
+        target:
+        averageUtilization: 30
+        type: Utilization
+    ```
+    with
+    ```yml
+    - resource:
+        name: memory
+        target:
+        averageUtilization: 30
+        type: Utilization
+    ```
 
-### Now we  need to stress the pod
-- Practice memory stress
-```bash
-kubectl get pods
+    ### Now we  need to stress the pod
+    - Practice memory stress
+    ```bash
+    kubectl get pods
 
-# login inside any pod of the nginx-deployment and execute stress
-kubect exec -it nginx-pod_id -- sh
+    # login inside any pod of the nginx-deployment and execute stress
+    kubect exec -it nginx-pod_id -- sh
 
-# then start stress
-stress --cpu 8 --io 4 --vm 2 --vm-bytes 128M --timeout 60s
+    # then start stress
+    stress --cpu 8 --io 4 --vm 2 --vm-bytes 128M --timeout 60s
 
-# fast stress
-stress --vm 1 --vm-bytes 1000M --vm-hang 0
-```
+    # fast stress
+    stress --vm 1 --vm-bytes 1000M --vm-hang 0
+    ```
 
 ## Monitoring:
 - Requirements:
