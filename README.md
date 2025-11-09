@@ -2,6 +2,8 @@
 # K8: Kubernetes and Monitoring
 ![architect](assets/candidate-dct.drawio.png)
 
+[access application from here](http://a5913fdfe679e471c9c2a8cfb55f9ae6-5592bdf5608cafce.elb.us-east-1.amazonaws.com/)
+---
 Task Description:
 1. EKS Cluster Setup:
    - Set up an Amazon EKS (Elastic Kubernetes Service) cluster.
@@ -181,26 +183,53 @@ and it's changed dynamically base on the selection of the LoadBalancer (ALB).
     ```
 
 ## Ingress Controller
-- Deploy ingress Controller
-    ```yml
-    apiVersion: networking.k8s.io/v1
-    kind: Ingress
-    metadata:
-    name: nginx-ingress
-    annotations:
-        kubernetes.io/ingress.class: "nginx"
-    spec:
-    rules:
-        - http:
-            paths:
-            - path: /
-                pathType: Prefix
-                backend:
-                service:
-                    name: nginx
-                    port:
-                    number: 80
-    ```
+I used ``Nginx Controller`` as ingress controller to manage my external access to my services
+which will create one LoadBalancer associated with ingress controller, so latter you can adds
+your routes as much  as you want and point them to the required services.
+for instance:
+- deploy nginx app and route will be /myapp1
+- deploy admin page under /admin
+- deploy argocd app under /argocd and so on..
+
+- a Controller
+```yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: ingress-nginx
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+    app.kubernetes.io/version: 1.14.0
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+spec:
+ ...
+```
+
+- nginx ingress routing
+```yml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-service
+            port:
+              number: 80
+```
 
 ## Horizontal Pod Autoscaler (HPA):
 Implement HPA based on memory utilization for the deployed application
@@ -250,8 +279,9 @@ Implement HPA based on memory utilization for the deployed application
     # then start stress
     stress --cpu 8 --io 4 --vm 2 --vm-bytes 128M --timeout 60s
 
+stress --cpu 8 --io 4 --vm 2 --vm-bytes 128M --vm-hang 0
     # fast stress
-    stress --vm 1 --vm-bytes 1000M --vm-hang 0
+    stress --vm 1 --vm-bytes 1000 --vm-hang 0
     ```
 
 ## Monitoring:
